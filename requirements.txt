@@ -1,0 +1,6 @@
+flask
+python-dotenv
+together
+sentence-transformers
+chromadb
+uvicorn
