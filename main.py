@@ -1,5 +1,4 @@
-# flask 
-
+# flask
 
 from flask import Flask, request, jsonify
 from chat import normalize_query, explain_recommendations
@@ -7,77 +6,100 @@ from embedding_search import search_candidates
 
 app = Flask(__name__)
 
-#skills가 너무 안나와서 추가해봄 삭제할수도
-import re
 
-SKILL_SYNONYMS = {
-    "카페 바리스타": ["바리스타", "커피", "에스프레소", "라떼아트", "브루잉", "핸드드립"],
-    "포스터 디자인": ["포스터", "디자인", "일러스트", "포토샵", "인디자인"],
-    "스마트스토어 운영": ["스마트스토어", "상세페이지", "상품 등록", "CS", "키워드 광고"],
-    # 필요시 계속 추가
-}
+user_states = {}  # { user_id: {"step": 1|2, "ctx": {...}} }
 
-def _normalize_ko(s: str) -> str:
-    return re.sub(r"[\s,./·|]+", "", s).lower()
+def _merge_ctx(base: dict, newbits: dict) -> dict:
+    out = dict(base or {})
+    for k in ("role", "region", "time", "skills"):
+        v = (newbits.get(k) or "").strip()
+        if v:
+            out[k] = v
+    return out
 
-def _kw_overlap_score(doc: str, skills_hint: str) -> float:
-    if not skills_hint:
-        return 0.0
-    doc_n = _normalize_ko(doc)
-    # 힌트 + 동의어 확장
-    cands = [skills_hint] + SKILL_SYNONYMS.get(skills_hint, [])
-    toks = set()
-    for t in cands:
-        for x in re.split(r"[\s,./·|]+", t.strip()):
-            if x:
-                toks.add(_normalize_ko(x))
-    if not toks:
-        return 0.0
-    # 부분 일치 허용(substring)
-    hits = sum(1 for t in toks if t in doc_n)
-    return hits / max(1, len(toks))
+def _role_to_target_type(role: str):
+    return "seeker" if role == "구인자" else ("employer" if role == "구직자" else None)
 
 
 @app.route("/chat", methods=["POST"])
-def chat_normalize():
-    user_text = request.json.get("text", "")
-    ctx = normalize_query(user_text)
-    return jsonify(ctx)
-    #return {"message": "청상회 ai 챗봇"}
+def chat():
+    body = request.get_json(silent=True) or {}
+    user_id = (body.get("user_id") or "anon").strip()
+    message = (body.get("message") or "").strip()
+    inc_ctx = body.get("context", {}) or {}
 
-@app.route("/search", methods=["POST"])
-def search():
     try:
-        body = request.json or {}
-        ctx = body.get("context", {}) or {}
-        q_parts = [ctx.get("region","").strip(), ctx.get("time","").strip(), ctx.get("skills","").strip()]
-        q = " ".join([p for p in q_parts if p]).strip() or (body.get("q") or "").strip()
+        # 상태 로드/초기화
+        state = user_states.get(user_id, {"step": 1, "ctx": {}})
+        ctx = _merge_ctx(state.get("ctx", {}), inc_ctx)
 
-        if not q:
-            return jsonify({
-                "error":"context or q required",
-                "detail":{
-                    "received_body": body,
-                    "computed_q_parts": q_parts,
-                    "hint": "context.region/time/skills 중 하나는 채우거나 q를 직접 보내주세요."
-                }
-            }), 400
+        # 역할 수집
+        if state["step"] == 1:
+            if message:
+                parsed = normalize_query(message) or {}
+                ctx = _merge_ctx(ctx, parsed)
 
-        skills_hint = (ctx.get("skills") or body.get("skills") or "").strip()
-        results = search_candidates(q, top_k=int(body.get("top_k", 5)), skills_hint=skills_hint)
-        return jsonify({"query": q, "results": results})
+            role = (ctx.get("role") or "").strip()
+            if role not in ("구인자", "구직자"):
+                user_states[user_id] = {"step": 1, "ctx": ctx}
+                return jsonify({"reply": "구인자입니까, 구직자입니까? (정확히 입력해주세요)"}), 200
+
+            user_states[user_id] = {"step": 2, "ctx": ctx}
+            if role == "구인자":
+                return jsonify({"reply": "어떤 분을 찾고 계신가요?\n예: '카페 바리스타, 마포구, 주 2회 오후'"}), 200
+            else:
+                return jsonify({"reply": "어떤 일을 할 수 있고 어디서 언제 일하고 싶으신가요?\n예: '포스터 디자인 가능, 성북구, 주 2회 오후'"}), 200
+
+        # 조건 수집 -> 추천
+        if state["step"] == 2:
+            if message:
+                parsed = normalize_query(message) or {}
+                ctx = _merge_ctx(ctx, parsed)
+
+            # 추가 질문(필요하면)
+            if not ctx.get("region"):
+                user_states[user_id] = {"step": 2, "ctx": ctx}
+                return jsonify({"reply": "어느 지역에서 찾나요? (예: 마포구)"}), 200
+            if not ctx.get("time"):
+                user_states[user_id] = {"step": 2, "ctx": ctx}
+                return jsonify({"reply": "가능 시간대를 알려주세요. (예: 주 2회 오후)"}), 200
+            if not ctx.get("skills"):
+                user_states[user_id] = {"step": 2, "ctx": ctx}
+                return jsonify({"reply": "직무/스킬을 알려주세요. (예: 카페 바리스타)"}), 200
+
+            # 검색 질의
+            q = " ".join([ctx.get("region",""), ctx.get("time",""), ctx.get("skills","")]).strip()
+            target_type = _role_to_target_type(ctx.get("role",""))
+            top_k = int(body.get("top_k", 3))
+            w_embed = float(body.get("w_embed", 0.4))
+            w_kw = float(body.get("w_kw", 0.6))
+
+            results = search_candidates(
+                q,
+                top_k=top_k,
+                skills_hint=ctx.get("skills",""),
+                w_embed=w_embed,
+                w_kw=w_kw,
+                target_type=target_type
+            )
+            summary = explain_recommendations(ctx, results)
+
+            # 세션 종료
+            user_states[user_id] = {"step": 1, "ctx": {}}
+
+            return jsonify({"reply": summary, "results": results, "context_used": ctx}), 200
+
+        # 비정상 상태면 초기화
+        user_states[user_id] = {"step": 1, "ctx": {}}
+        return jsonify({"reply": "세션을 초기화했어요. 구인자입니까, 구직자입니까?"}), 200
+
     except Exception as e:
         import traceback
-        print(">>> /search error\n", traceback.format_exc())
-        return jsonify({"error":"internal_error","detail":str(e)}), 500
+        print(">>> /chat error\n", traceback.format_exc())
+        print(">>> body:", body)
+        print(">>> state:", user_states.get(user_id))
+        return jsonify({"error": "internal_error", "detail": str(e)}), 500
 
-
-@app.route("/recommend", methods=["POST"])
-def recommend():
-    ctx = request.json.get("context", {})
-    candidates = request.json.get("candidates", [])
-    text = explain_recommendations(ctx, candidates)
-    return jsonify({"summary": text})
 
 @app.route("/healthz", methods=["GET"])
 def health():

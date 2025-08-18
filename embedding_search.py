@@ -3,75 +3,193 @@
 
 
 
-# 임베딩 기반 검색 
+from __future__ import annotations
 
-import os, re, json
-from typing import List, Dict, Any
+import hashlib
+import json
+import os
+import re
+from typing import Any, Dict, List
+
 from chromadb import PersistentClient
-from sentence_transformers import SentenceTransformer
 from dotenv import load_dotenv
+from sentence_transformers import SentenceTransformer
 
+#동의어,
+SKILL_SYNONYMS: Dict[str, List[str]] = {
+    "카페 바리스타": ["바리스타", "커피", "에스프레소", "라떼아트", "브루잉", "핸드드립"],
+    "포스터 디자인": ["포스터", "디자인", "일러스트", "포토샵", "인디자인"],
+    "스마트스토어 운영": ["스마트스토어", "상세페이지", "상품 등록", "CS", "키워드 광고"],
+}
+
+_DELIMS = r"[\s,./·|]+"
+
+
+def _normalize_ko(s: str) -> str:
+    return re.sub(_DELIMS, "", (s or "")).lower()
+
+
+def _tokenize(s: str) -> List[str]:
+    return [t for t in re.split(_DELIMS, (s or "").strip()) if t]
+
+
+def _expanded_terms(hint: str) -> List[str]:
+    if not hint:
+        return []
+    terms = set(_tokenize(hint))
+    n_hint = _normalize_ko(hint)
+    for key, syns in SKILL_SYNONYMS.items():
+        nk = _normalize_ko(key)
+        if nk in n_hint or n_hint in nk:
+            for s in syns:
+                terms.update(_tokenize(s))
+    return sorted(terms)
+
+
+def _kw_overlap_score(doc: str, skills_hint: str) -> float:
+    """동의어 확장 기반 아주 단순한 키워드 매칭 보너스 (0~1)"""
+    if not skills_hint:
+        return 0.0
+    doc_n = _normalize_ko(doc)
+    toks = _expanded_terms(skills_hint)
+    if not toks:
+        return 0.0
+    hits = sum(1 for t in toks if _normalize_ko(t) in doc_n)
+    return hits / max(1, len(toks))
+
+
+#경로 환경 초기화
 load_dotenv()
 PERSIST_DIR = os.getenv("PERSIST_DIR", "./chroma_data")
+MODEL_NAME = os.getenv("MODEL_NAME", "intfloat/multilingual-e5-large")
+COLLECTION_NAME = os.getenv("COLLECTION_NAME", "candidates")
 
 HERE = os.path.dirname(__file__)
 CANDIDATE_DIRS = [os.path.join(HERE, "data"), os.path.join(os.path.dirname(HERE), "data")]
 
-def _find_data_dir():
+
+def _find_data_dir() -> str | None:
     for d in CANDIDATE_DIRS:
         if os.path.isdir(d):
             return d
     return None
+
 
 DATA_DIR = _find_data_dir()
 print("[embedding_search] CWD =", os.getcwd())
 print("[embedding_search] DATA_DIR =", DATA_DIR)
 
 _client = PersistentClient(path=PERSIST_DIR)
-_col = _client.get_or_create_collection("candidates")
-_model = SentenceTransformer("intfloat/multilingual-e5-large")
+try:
+    _col = _client.get_or_create_collection(COLLECTION_NAME)
+except Exception:
+    try:
+        _client.delete_collection(COLLECTION_NAME)
+    except Exception:
+        pass
+    _col = _client.get_or_create_collection(COLLECTION_NAME)
+
+_model = SentenceTransformer(MODEL_NAME)
+_SIDE_META = os.path.join(PERSIST_DIR, f"{COLLECTION_NAME}.version.json")
+
+
+#인덱싱
+def _data_fingerprint() -> str:
+    """seekers.json / employers.json 파일 변경 감지를 위한 지문 해시"""
+    if not DATA_DIR:
+        return ""
+    parts: List[str] = []
+    for fn in ("seekers.json", "employers.json"):
+        p = os.path.join(DATA_DIR, fn)
+        if os.path.exists(p):
+            st = os.stat(p)
+            parts.append(f"{fn}:{st.st_size}:{int(st.st_mtime)}")
+        else:
+            parts.append(f"{fn}:missing")
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+
+
+def _save_version(meta: Dict[str, Any]) -> None:
+    os.makedirs(PERSIST_DIR, exist_ok=True)
+    try:
+        with open(_SIDE_META, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def _load_version() -> Dict[str, Any]:
+    if not os.path.exists(_SIDE_META):
+        return {}
+    try:
+        with open(_SIDE_META, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
 
 
 def _load_all_profiles() -> List[Dict[str, str]]:
-    """seekers.json, employers.json에서 profile 문장 로드"""
+    """
+    seekers.json / employers.json을 읽어 (skills|job) + profile을 합친 텍스트를 색인 문서로 사용
+    메타에는 name, type, job, skills, profile_raw 보존
+    """
     if not DATA_DIR:
         print("[embedding_search] data dir not found")
         return []
+
     items: List[Dict[str, str]] = []
     for fn in ("seekers.json", "employers.json"):
         path = os.path.join(DATA_DIR, fn)
-        if os.path.exists(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                for it in data:
-                    prof = (it.get("profile") or it.get("desc") or "").strip()
-                    name = (it.get("name") or "noname").strip()
-                    if prof:
-                        items.append({"name": name, "profile": prof})
-            except Exception as ex:
-                print("[embedding_search] JSON load error:", ex)
+        if not os.path.exists(path):
+            continue
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        typ = "seeker" if "seekers" in fn else "employer"
+        for it in data:
+            name = (it.get("name") or "noname").strip()
+            skills = (it.get("skills") or it.get("job") or "").strip()
+            job = (it.get("job") or it.get("skills") or "").strip()  
+            profile_only = (it.get("profile") or "").strip()
+            merged = ", ".join([p for p in (skills or job, profile_only) if p])
+
+            if merged:
+                items.append(
+                    {
+                        "name": name,
+                        "type": typ,
+                        "job": job,
+                        "skills": skills,
+                        "profile": merged,         
+                        "profile_raw": profile_only,  
+                    }
+                )
+
     print(f"[embedding_search] loaded profiles: {len(items)}")
     return items
 
 
-def _ensure_index():
-    """컬렉션 비어 있으면 인덱스 생성. E5 권장 포맷(passsage:) 적용"""
+def _rebuild_index(items: List[Dict[str, str]]) -> None:
+    """컬렉션 갱신(삭제 후 재생성) + 임베딩 저장"""
+    global _col
     try:
-        if _col.count() > 0:
-            return
-    except Exception as ex:
-        print("[embedding_search] col.count error:", ex)
-
-    items = _load_all_profiles()
-    if not items:
-        print("[embedding_search] no items to index")
-        return
+        _client.delete_collection(COLLECTION_NAME)
+    except Exception:
+        pass
+    _col = _client.get_or_create_collection(COLLECTION_NAME)
 
     ids = [f"cand_{i}" for i in range(len(items))]
-    
     docs = [f"passage: {it['profile']}" for it in items]
-    metas = [{"name": it["name"]} for it in items]
+    metas = [
+        {
+            "name": it["name"],
+            "type": it["type"],
+            "job": it.get("job", ""),
+            "skills": it.get("skills", ""),
+            "profile_raw": it.get("profile_raw", ""),
+        }
+        for it in items
+    ]
 
     vecs = _model.encode(
         docs,
@@ -83,37 +201,48 @@ def _ensure_index():
     print(f"[embedding_search] indexed {len(ids)} docs")
 
 
-def _kw_overlap_score(doc: str, skills_hint: str) -> float:
-    """아주 단순한 키워드 일치 보너스 (0~1)"""
-    if not skills_hint:
-        return 0.0
-    toks = [t for t in re.split(r"[\s,./·|]+", skills_hint.strip()) if t]
-    if not toks:
-        return 0.0
-    hit = sum(1 for t in toks if t in doc)
-    return hit / max(1, len(toks))
+def _ensure_index() -> None:
+    """컬렉션이 비었거나 데이터가 바뀌었으면 """
+    fp = _data_fingerprint()
+    ver = _load_version()
+    try:
+        count = _col.count()
+    except Exception:
+        count = 0
+
+    if count == 0 or ver.get("fp") != fp:
+        items = _load_all_profiles()
+        if not items:
+            print("[embedding_search] no items to index")
+            return
+        _rebuild_index(items)
+        _save_version({"fp": fp, "count": len(items)})
 
 
-def search_candidates(query_text: str, top_k: int = 5, skills_hint: str = "",
-                    w_embed: float = 0.4, w_kw: float = 0.6,  # ← 스킬 가중 강화
-                    target_type=None):
+
+def search_candidates(
+    query_text: str,
+    top_k: int = 5,
+    skills_hint: str = "",
+    w_embed: float = 0.4,
+    w_kw: float = 0.6,
+    target_type: str | None = None,
+) -> List[Dict[str, Any]]:
     """
-    임베딩 검색 + 스킬 가중:
-        - E5 query/passage 접두어
-        - skills_hint 2회 반복으로 가중 강화
-        - 임베딩 점수 + 키워드 보너스 가중합으로 최종 정렬
+    임베딩 검색 + 키워드 보너스:
+        - E5 포맷(query:/passage:) 사용
+        - skills_hint 4회 부스팅으로 질의 강화
+        - 임베딩 점수와 키워드 보너스 가중합
+        - target_type(seeker/employer) 필터
     """
     _ensure_index()
 
-    # 컬렉션 상태 확인
     try:
         if _col.count() == 0:
             return []
-    except Exception as ex:
-        print("[embedding_search] col.count after ensure error:", ex)
+    except Exception:
         return []
 
-    # top_k 가드
     try:
         top_k = int(top_k)
         if top_k <= 0:
@@ -121,28 +250,18 @@ def search_candidates(query_text: str, top_k: int = 5, skills_hint: str = "",
     except Exception:
         top_k = 5
 
-    
-    q_text = query_text.strip()
-    if skills_hint:
-        boosted = " ".join([q_text] + [skills_hint.strip()] * 4)  # ← 4회 반복
-    else:
-        boosted = q_text
+    q_text = (query_text or "").strip()
+    boosted = " ".join([q_text] + ([skills_hint.strip()] * 4 if skills_hint else []))
     q_text_prefixed = f"query: {boosted}".strip()
 
-    q_emb = _model.encode(
-        [q_text_prefixed],
-        convert_to_numpy=True,
-        normalize_embeddings=True
-    )[0]
+    q_emb = _model.encode([q_text_prefixed], convert_to_numpy=True, normalize_embeddings=True)[0]
 
-    # include에 'ids' 넣지X
     res = _col.query(
         query_embeddings=[q_emb.tolist()],
-        n_results=top_k,
-        include=["documents", "metadatas", "distances"]
+        n_results=max(top_k * 10, 50),  # 처음엔 넉넉히 받아서 가중치 재정렬
+        include=["documents", "metadatas", "distances"],
     )
 
-    # 안전 가드로 꺼내기
     ids = (res.get("ids") or [[]])[0] if res.get("ids") else []
     docs = (res.get("documents") or [[]])[0]
     metas = (res.get("metadatas") or [[]])[0]
@@ -150,19 +269,30 @@ def search_candidates(query_text: str, top_k: int = 5, skills_hint: str = "",
 
     out: List[Dict[str, Any]] = []
     for i in range(len(docs)):
+        doc_i = docs[i] if i < len(docs) else ""
+        doc_plain = doc_i.removeprefix("passage: ").strip()
+
         embed_score = float(1 - dists[i]) if i < len(dists) else 0.0
-        # passage: 접두어 제거한 원문을 보여주고 싶다면:
-        doc_plain = docs[i].removeprefix("passage: ").strip()
         kw_score = _kw_overlap_score(doc_plain, skills_hint)
         final = w_embed * embed_score + w_kw * kw_score
-        out.append({
-            "id": ids[i] if i < len(ids) else f"cand_{i}",
-            "name": (metas[i] or {}).get("name") if i < len(metas) else None,
-            "profile": doc_plain,
-            "score": final,
-            "debug": {"embed": embed_score, "kw": kw_score}  # 배포 때 제거 가능
-        })
 
-    # 최종 점수 기준 재정렬
+        meta = metas[i] if i < len(metas) and metas[i] else {}
+        out.append(
+            {
+                "id": ids[i] if i < len(ids) else f"cand_{i}",
+                "name": meta.get("name"),
+                "type": meta.get("type"),
+                "job": meta.get("job", ""),
+                "skills": meta.get("skills", ""),
+                "profile": doc_plain,
+                "score": final,
+                "debug": {"embed": embed_score, "kw": kw_score},
+            }
+        )
+
+    # 역할 필터
+    if target_type in ("seeker", "employer"):
+        out = [r for r in out if r.get("type") == target_type]
+
     out.sort(key=lambda x: x["score"], reverse=True)
-    return out
+    return out[:top_k]

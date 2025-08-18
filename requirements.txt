@@ -1,6 +1,7 @@
-flask
-python-dotenv
-together
-sentence-transformers
-chromadb
-uvicorn
+flask==3.0.3
+python-dotenv==1.0.1
+chromadb==0.5.5
+sentence-transformers==3.0.1
+torch>=2.2.0
+# Together 사용 시
+together==1.3.0
