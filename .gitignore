@@ -234,3 +234,13 @@ $RECYCLE.BIN/
 *.lnk
 
 # End of https://www.toptal.com/developers/gitignore/api/macos,java,intellij,windows,visualstudiocode,react
+.venv/
+.env
+__pycache__/
+*.pyc
+chroma_data/
+.venv/
+.env
+__pycache__/
+*.pyc
+chroma_data/
