@@ -45,7 +45,7 @@ def chat():
                 return jsonify({"reply": "상인입니까, 청년입니까? (정확히 입력해주세요)"}), 200
 
             user_states[user_id] = {"step": 2, "ctx": ctx}
-            if role == "구인자":
+            if role == "상인":
                 return jsonify({"reply": "어떤 청년을 찾고 계신가요?\n예: '카페 바리스타, 마포구, 주 2회 오후'"}), 200
             else:
                 return jsonify({"reply": "어떤 일을 할 수 있고 어디서 언제 일하고 싶으신가요?\n예: '포스터 디자인 가능, 성북구, 주 2회 오후'"}), 200
