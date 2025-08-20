@@ -13,7 +13,7 @@ USE_TOGETHER = os.getenv("USE_TOGETHER_CHAT", "false").lower() == "true"
 MODEL_CHAT   = os.getenv("MODEL_CHAT", "meta-llama/Llama-3.1-8B-Instruct-Turbo")
 API_KEY      = os.getenv("TOGETHER_API_KEY") or ""
 CACHE_TTL    = int(os.getenv("CACHE_TTL_SECONDS", "86400"))  
-
+GENDER_PAT = re.compile(r"(남자|여자|남성|여성)")
 # Together 
 client = None
 if USE_TOGETHER and API_KEY:
@@ -87,12 +87,14 @@ def _rule_extract(text: str) -> Tuple[Dict[str, str], bool]:
     regions = REGION_PAT.findall(text) or []
     times   = TIME_PAT.findall(text) or []
     skill   = _canon_skill(text)
-
+    gender  = "".join(GENDER_PAT.findall(text))
+    
     ctx = {
         "role": role,
         "region": " ".join(regions[:2]),
         "time": " ".join(times[:3]),
         "skills": skill,
+        "gender": gender
     }
     confident = bool(role) and (ctx["region"] or ctx["time"] or ctx["skills"])
     return ctx, confident
@@ -129,14 +131,15 @@ def normalize_query(user_text: str) -> Dict[str, str]:
     #  규칙 기반
     ctx, ok = _rule_extract(user_text)
     if ok or not USE_TOGETHER or client is None:
+        ctx.setdefault("gender", "") 
         _set_cache(key, ctx)
         return ctx
 
     # LLM 호출
     sys = (
         "너는 상인/청년 매칭 보조야. 사용자 입력에서 "
-        "{role, region, time, skills}만 추출해 한국어 JSON으로만 출력해줘. "
-        "예: {\"role\":\"상인\",\"region\":\"마포구\",\"time\":\"주 2회 오후\",\"skills\":\"포스터 디자인\"}"
+        "{role, region, time, skills,gender}만 추출해 한국어 JSON으로만 출력해줘. "
+        "예: {\"role\":\"상인\",\"region\":\"마포구\",\"time\":\"주 2회 오후\",\"skills\":\"포스터 디자인\",\"gender\":\"남\"}"
     )
     try:
         r = client.chat.completions.create(
@@ -158,6 +161,7 @@ def normalize_query(user_text: str) -> Dict[str, str]:
             "region": (parsed.get("region") or "").strip(),
             "time":   (parsed.get("time") or "").strip(),
             "skills": (parsed.get("skills") or "").strip(),
+            "gender": (parsed.get("gender") or "").strip()
         }
         # 스킬 캐논 보정(LLM이 애매하게 주면 정규화)
         if out["skills"] and out["skills"] not in SKILL_CANON:
@@ -186,7 +190,7 @@ def explain_recommendations(context: Dict[str, Any], candidates: List[Dict[str, 
 
     # LLM 미사용.불가=> 간단 bullet
     if not USE_TOGETHER or client is None:
-        bullets = [f"- {c.get('name','이름미상')}: {c.get('profile','')}" for c in top if c.get("name")]
+        bullets = [f"- {c.get('name','이름미상')} ({c.get('gender','성별미상')}): {c.get('profile','')}" for c in top if c.get("name")]
         text = "추천 후보:\n" + "\n".join(bullets) if bullets else "추천 후보가 없습니다."
         _set_cache(key, text)
         return text
@@ -209,7 +213,7 @@ def explain_recommendations(context: Dict[str, Any], candidates: List[Dict[str, 
         return out
     except Exception as e:
         print("[explain_recommendations] LLM error -> fallback:", e)
-        bullets = [f"- {c.get('name','이름미상')}: {c.get('profile','')}" for c in top if c.get("name")]
+        bullets = [f"- {c.get('name','이름미상')}: ({c.get('gender','성별미상')}): {c.get('profile','')}" for c in top if c.get("name")]
         text = "추천 후보:\n" + "\n".join(bullets) if bullets else "추천 후보가 없습니다."
         _set_cache(key, text)
         return text

@@ -130,12 +130,17 @@ def generate_name():
     first_names = ["지민", "수현", "도윤", "서연", "민준", "하늘", "예진", "현우", "지연", "다영", "서윤", "승현", "가은", "윤호", "다은"]
     return random.choice(last_names) + random.choice(first_names)
 
+#성별
+def generate_gender():
+    return random.choice(["남", "여"])
+
 # 구직자 데이터 
 seekers = []
 for job, skills in skills_seekers.items():
     for _ in range(3):  #3명
         seekers.append({
             "name": generate_name(),
+            "gender": generate_gender(),
             "job": job,
             "profile": f"{random.choice(regions)}, {random.choice(times)}, {random.choice(skills)}"
         })
@@ -146,6 +151,7 @@ for job, requirements in skills_employers.items():
     for _ in range(3):  # 3명
         employers.append({
             "name": generate_name() + " 사장님",
+            "gender": generate_gender(),
             "job": job,
             "profile": f"{random.choice(regions)}, {random.choice(times)}, {random.choice(requirements)}"
         })
