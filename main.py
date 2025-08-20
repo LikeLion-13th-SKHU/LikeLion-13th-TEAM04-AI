@@ -66,9 +66,7 @@ def chat():
             if not ctx.get("skills"):
                 user_states[user_id] = {"step": 2, "ctx": ctx}
                 return jsonify({"reply": "직무/스킬을 알려주세요. (예: 카페 바리스타)"}), 200
-            if not ctx.get("gender"):
-                user_states[user_id] = {"step": 2, "ctx": ctx}
-                return jsonify({"reply": "성별을 알려주세요. (예: 남성, 여성)"}), 200
+            
 
             # 검색 질의
             q = " ".join([ctx.get("region",""), ctx.get("time",""), ctx.get("skills","")]).strip()
