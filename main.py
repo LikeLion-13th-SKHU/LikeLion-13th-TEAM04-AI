@@ -18,7 +18,7 @@ def _merge_ctx(base: dict, newbits: dict) -> dict:
     return out
 
 def _role_to_target_type(role: str):
-    return "seeker" if role == "구인자" else ("employer" if role == "구직자" else None)
+    return "청년" if role == "상인" else ("상인" if role == "청년" else None)
 
 
 @app.route("/chat", methods=["POST"])
@@ -40,13 +40,13 @@ def chat():
                 ctx = _merge_ctx(ctx, parsed)
 
             role = (ctx.get("role") or "").strip()
-            if role not in ("구인자", "구직자"):
+            if role not in ("상인", "청년"):
                 user_states[user_id] = {"step": 1, "ctx": ctx}
-                return jsonify({"reply": "구인자입니까, 구직자입니까? (정확히 입력해주세요)"}), 200
+                return jsonify({"reply": "상인입니까, 청년입니까? (정확히 입력해주세요)"}), 200
 
             user_states[user_id] = {"step": 2, "ctx": ctx}
             if role == "구인자":
-                return jsonify({"reply": "어떤 분을 찾고 계신가요?\n예: '카페 바리스타, 마포구, 주 2회 오후'"}), 200
+                return jsonify({"reply": "어떤 청년을 찾고 계신가요?\n예: '카페 바리스타, 마포구, 주 2회 오후'"}), 200
             else:
                 return jsonify({"reply": "어떤 일을 할 수 있고 어디서 언제 일하고 싶으신가요?\n예: '포스터 디자인 가능, 성북구, 주 2회 오후'"}), 200
 
@@ -91,7 +91,7 @@ def chat():
 
         # 비정상 상태면 초기화
         user_states[user_id] = {"step": 1, "ctx": {}}
-        return jsonify({"reply": "세션을 초기화했어요. 구인자입니까, 구직자입니까?"}), 200
+        return jsonify({"reply": "세션을 초기화했어요. 상인입니까, 청년입니까?"}), 200
 
     except Exception as e:
         import traceback

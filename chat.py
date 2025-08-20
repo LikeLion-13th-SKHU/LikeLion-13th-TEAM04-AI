@@ -45,8 +45,8 @@ def _set_cache(k: str, val: Any, ttl: int = CACHE_TTL):
 
 # 역할 힌트
 ROLE_PATTERNS = [
-    (re.compile(r"(사장|사장님|점주|고용|채용|모집|구함|찾아요|구인)"), "구인자"),
-    (re.compile(r"(구직|지원|일할|알바|파트타임|포트폴리오|할\s*수|가능)"), "구직자"),
+    (re.compile(r"(상인|사장|사장님|점주|고용|모집|구함|찾아요|채용)"), "상인"),
+    (re.compile(r"(청년|지원|일할|알바|파트타임|포트폴리오|할\s*수|가능)"), "청년"),
 ]
 
 # 행정동/구 일부
@@ -134,9 +134,9 @@ def normalize_query(user_text: str) -> Dict[str, str]:
 
     # LLM 호출
     sys = (
-        "너는 구인/구직 매칭 보조야. 사용자 입력에서 "
+        "너는 상인/청년 매칭 보조야. 사용자 입력에서 "
         "{role, region, time, skills}만 추출해 한국어 JSON으로만 출력해줘. "
-        "예: {\"role\":\"구인자\",\"region\":\"마포구\",\"time\":\"주 2회 오후\",\"skills\":\"포스터 디자인\"}"
+        "예: {\"role\":\"상인\",\"region\":\"마포구\",\"time\":\"주 2회 오후\",\"skills\":\"포스터 디자인\"}"
     )
     try:
         r = client.chat.completions.create(

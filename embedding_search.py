@@ -1,7 +1,8 @@
 # 임베딩
 #임베딩 기반 검색
-
-
+# 각 json을 읽어-> 임베딩 인덱스(크로마디비)를 만들고-> 의미 유사도(E5임베딩) + 키워드 보너스를 합산해 사우이 후보 반환
+# 모델: intfloat/multilingual-e5-large를 기본 사용
+#저장소: chromadb.PersistentClient로 영속 컬렉션을 유지
 
 from __future__ import annotations
 
@@ -61,13 +62,13 @@ def _kw_overlap_score(doc: str, skills_hint: str) -> float:
 #경로 환경 초기화
 load_dotenv()
 PERSIST_DIR = os.getenv("PERSIST_DIR", "./chroma_data")
-MODEL_NAME = os.getenv("MODEL_NAME", "intfloat/multilingual-e5-large")
+MODEL_NAME = os.getenv("MODEL_NAME", "intfloat/multilingual-e5-large")# intfloat/multilingual-e5-large : 임베딩 모델임
 COLLECTION_NAME = os.getenv("COLLECTION_NAME", "candidates")
 
 HERE = os.path.dirname(__file__)
 CANDIDATE_DIRS = [os.path.join(HERE, "data"), os.path.join(os.path.dirname(HERE), "data")]
 
-
+# data/폴더에서 json파일 사용할 준비.
 def _find_data_dir() -> str | None:
     for d in CANDIDATE_DIRS:
         if os.path.isdir(d):
@@ -145,7 +146,7 @@ def _load_all_profiles() -> List[Dict[str, str]]:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        typ = "seeker" if "seekers" in fn else "employer"
+        typ = "청년" if "seekers" in fn else "상인"
         for it in data:
             name = (it.get("name") or "noname").strip()
             skills = (it.get("skills") or it.get("job") or "").strip()
