@@ -53,7 +53,7 @@ def health():
 def chat():
     body = request.get_json(silent=True) or {}
     
-    room_id = body.get("roomId")
+    room_id = body.get("roomId")or body.get("room_id")
     user_id = str(body.get("userId") if body.get("userId") is not None else body.get("user_id") or "anon").strip()
     text    = (body.get("text") or body.get("message") or "").strip()
     inc_ctx = body.get("context", {}) or {}
