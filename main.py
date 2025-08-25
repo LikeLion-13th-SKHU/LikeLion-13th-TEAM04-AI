@@ -3,7 +3,7 @@
 from flask import Flask, request, jsonify
 from chat import normalize_query, explain_recommendations
 from embedding_search import search_candidates
-
+import re
 
 app = Flask(__name__)
 
@@ -28,7 +28,6 @@ def _wrap(success: bool, code: str, message: str, data: dict):
 
 
 def _simplify_results(results: list):
-    """프론트/백에서 쓰기 좋게 필드만 남김"""
     simple = []
     for r in results:
         simple.append({
@@ -43,6 +42,73 @@ def _simplify_results(results: list):
         })
     return simple
 
+#사용자의 재매칭 의사를 판별
+def _parse_yes_no(text: str) -> str:
+    t = (text or "").strip().lower()
+    yes_tokens = ["y", "yes", "예", "네", "웅", "응", "ㅇ", "다시", "재추천", "재매칭", "리롤", "한번더", "또"]
+    no_tokens  = ["n", "no", "아니", "아니오", "노", "그만", "끝", "stop"]
+    if any(tok in t for tok in yes_tokens):
+        return "yes"
+    if any(tok in t for tok in no_tokens):
+        return "no"
+    return "unknown"
+
+def _parse_exclusions(text: str):
+    out = {"by_index": [], "by_name": [], "by_id": []}
+    if not text:
+        return out
+
+    # 숫자 + '번' 패턴
+    for m in re.finditer(r'(\d+)\s*번', text):
+        try:
+            out["by_index"].append(int(m.group(1)))
+        except:
+            pass
+
+    # id:xxxx 패턴
+    for m in re.finditer(r'id\s*:\s*([A-Za-z0-9_\-]+)', text, re.IGNORECASE):
+        out["by_id"].append(m.group(1))
+
+    # 'OOO 제외/빼고' 이름 추정 (한글/영문 연속 토큰)
+    for m in re.finditer(r'([A-Za-z가-힣]{2,})\s*(제외|빼고)', text):
+        out["by_name"].append(m.group(1))
+
+    return out
+
+def _apply_exclusions(prev_results: list, exclusions: dict):
+    """
+    이전 결과에서 사용자가 제외한 항목의 id 리스트를 반환
+    """
+    ids = []
+    if not prev_results:
+        return ids
+
+    # by_index는 1-based로 가정(화면에 1,2,3 으로 보일 가능성 대비)
+    for idx in exclusions.get("by_index", []):
+        i = idx - 1
+        if 0 <= i < len(prev_results):
+            rid = prev_results[i].get("id")
+            if rid:
+                ids.append(rid)
+
+    # by_name
+    by_name = set(exclusions.get("by_name", []))
+    if by_name:
+        for r in prev_results:
+            if r.get("name") and r["name"] in by_name and r.get("id"):
+                ids.append(r["id"])
+
+    # by_id
+    for rid in exclusions.get("by_id", []):
+        ids.append(rid)
+
+    # 중복 제거
+    return list(dict.fromkeys(ids))
+
+def _filter_out_ids(results: list, exclude_ids: set):
+    if not exclude_ids:
+        return results
+    return [r for r in results if r.get("id") not in exclude_ids]
 #헬스체크
 @app.route("/healthz", methods=["GET"])
 def health():
