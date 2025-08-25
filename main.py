@@ -72,9 +72,9 @@ def chat():
             if text:
                 ctx = _merge_ctx(ctx, normalize_query(text))
 
-            for need, msg in (("region", "어느 지역에서 찾나요? (예: 마포구)"),
-                                ("time", "가능 시간대를 알려주세요. (예: 주 2회 오후)"),
-                                ("skills", "직무/스킬을 알려주세요. (예: 카페 바리스타)")):
+            for need, msg in (("region", "어느 지역에서 찾나요? 자세하게 입력해주세요 (예: 마포구)"),
+                                ("time", "가능 시간대를 자세하게 알려주세요. (예: 주 2회 오후)"),
+                                ("skills", "가능하신 업무를 자세하게 알려주세요. (예: 백엔드 개발자)")):
                 if not ctx.get(need):
                     user_states[state_key] = {"step": 2, "ctx": ctx}
                     return jsonify(_wrap(True, "OK", "조건 질문", {
